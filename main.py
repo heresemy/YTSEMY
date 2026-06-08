@@ -5,18 +5,35 @@ app = Flask(__name__)
 
 API_BASE_URL = "https://youtube-video-download.unaux.com/"
 
+# Headers to mimic a real browser
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://youtube-video-download.unaux.com/",
+    "Origin": "https://youtube-video-download.unaux.com",
+    "Connection": "keep-alive"
+}
+
 def is_youtube_url(url):
     import re
     return bool(re.search(r'(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)', url))
 
 def fetch_video_info(youtube_url):
     try:
-        resp = requests.get(API_BASE_URL, params={"url": youtube_url}, timeout=30)
+        # First, try to get info using GET with params
+        resp = requests.get(
+            API_BASE_URL,
+            params={"url": youtube_url},
+            headers=DEFAULT_HEADERS,
+            timeout=30,
+            allow_redirects=True
+        )
         resp.raise_for_status()
         data = resp.json()
 
         if not data.get("success"):
-            return {"success": False, "error": data.get("error", "API error")}
+            return {"success": False, "error": data.get("error", "API returned error")}
 
         video = data.get("video", {})
         formats = data.get("formats", {})
@@ -35,7 +52,7 @@ def fetch_video_info(youtube_url):
                         "quality": f.get("quality"),
                         "size": f.get("size"),
                         "extension": f.get("extension"),
-                        "format_id": f.get("downloadUrl")   # direct download link
+                        "format_id": f.get("downloadUrl")
                     }
                     for f in formats.get("video", [])
                 ],
@@ -50,8 +67,12 @@ def fetch_video_info(youtube_url):
                 ]
             }
         }
+    except requests.exceptions.ConnectionError as e:
+        return {"success": False, "error": "Connection failed: The external service might be down or blocking our request."}
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "Request timed out. Please try again."}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"Error: {str(e)}"}
 
 @app.route('/')
 def index():
@@ -70,21 +91,15 @@ def get_info():
 
 @app.route('/api/download', methods=['POST'])
 def download():
-    """
-    Frontend sends { url, format_id, type }
-    format_id is the direct download URL from the external API.
-    We proxy the download so the frontend gets a blob (same as before).
-    """
     data = request.get_json()
     download_url = data.get('format_id')
     if not download_url:
         return jsonify({"success": False, "error": "No download link"}), 400
 
-    # Fetch the file from external API and stream to client
     try:
-        resp = requests.get(download_url, stream=True, timeout=60)
+        # Stream the file from the external API
+        resp = requests.get(download_url, headers=DEFAULT_HEADERS, stream=True, timeout=60)
         resp.raise_for_status()
-        # Extract filename from Content-Disposition if present
         content_disposition = resp.headers.get('Content-Disposition')
         filename = "download.mp4"
         if content_disposition and 'filename=' in content_disposition:
